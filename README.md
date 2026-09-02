@@ -1,10 +1,20 @@
 # Case Técnico | Desenvolvedor Python Pleno | Automação, Dados e IA
 
-Solução do case técnico da Cômodo. O projeto tem três partes, cada uma em sua pasta:
+Solução do case técnico da Cômodo. O repositório contém três projetos independentes, um por pasta:
 
 1. Ingestão de repositórios públicos de uma organização via API do GitHub
 2. Queries SQL sobre os dados de funil (investimento, leads e vendas)
 3. Classificação de conversas de pré-vendas com LLM
+
+Além do código, o enunciado pede decisões explicadas e análise dos dados: a recomendação de realocação de verba fecha a parte 2, e a resposta sobre a confiança da classificação com o tempo fecha a parte 3.
+
+## Decisões de engenharia
+
+O ambiente e as dependências ficam com o Poetry, travadas no `poetry.lock`, então o mesmo conjunto de versões roda em qualquer máquina. A imagem é Docker em estágio único, porque ela só precisa executar os scripts, sem etapa de publicação que justifique mais camadas. O `docker compose` é o ponto de entrada: um comando por parte.
+
+Nenhuma credencial vive no repositório: o `.env` está fora do git, o `.env.example` versiona apenas os nomes das variáveis e as credenciais entram no container em tempo de execução, nunca gravadas na imagem. Quem clona o projeto não recebe nenhum segredo, e a imagem construída não os carrega.
+
+O build também roda o flake8, linter que aponta erros comuns e desvios de estilo em Python, sobre todo o código: a linha `RUN flake8` quebra a construção com qualquer apontamento, então nada sem lint chega ao repositório. Como as camadas de dependência ficam em cache, o lint reexecuta apenas quando o código muda. Para rodar fora do build: `docker compose run --rm part1 flake8`.
 
 ## Requisitos
 
@@ -17,7 +27,7 @@ Solução do case técnico da Cômodo. O projeto tem três partes, cada uma em s
 copy .env.example .env
 ```
 
-Preencha o `GITHUB_TOKEN` no arquivo `.env` com um token pessoal do GitHub, gerado sem nenhum escopo, pois os dados consumidos são públicos. O token é injetado em tempo de execução e não fica gravado na imagem. A parte 3 também lê o `.env`: preencha `LLM_API_KEY`, `LLM_BASE_URL` e `LLM_MODEL` com a chave, o endereço e o modelo do provedor de LLM escolhido.
+Preencha o `GITHUB_TOKEN` com um token pessoal do GitHub, gerado sem nenhum escopo, porque os dados consumidos são públicos. Para a parte 3, preencha também `LLM_API_KEY`, `LLM_BASE_URL` e `LLM_MODEL` com a chave, o endereço e o modelo do provedor de LLM escolhido.
 
 ## Executando
 
@@ -26,12 +36,6 @@ docker compose run --build --rm part1
 ```
 
 O comando constrói a imagem quando necessário e executa a parte correspondente. Os serviços disponíveis são `part1`, `part2` e `part3`. Cada parte grava seus arquivos na subpasta `output` dentro da própria pasta da parte.
-
-## Decisões de engenharia
-
-O ambiente e as dependências ficam com o Poetry, travadas no `poetry.lock`, então o mesmo conjunto de versões roda em qualquer máquina. A imagem é Docker em estágio único, porque ela só precisa executar os scripts, sem etapa de publicação que justifique mais camadas. O `docker compose` é o ponto de entrada: um comando por parte, com o token saindo do `.env` em tempo de execução, nunca gravado na imagem.
-
-O build também roda o flake8, linter que aponta erros comuns e desvios de estilo em Python, sobre todo o código: a linha `RUN flake8` quebra a construção com qualquer apontamento, então nada sem lint chega ao repositório. Como as camadas de dependência ficam em cache, o lint reexecuta apenas quando o código muda. Para rodar fora do build: `docker compose run --rm part1 flake8`.
 
 ## Parte 1 | Ingestão via API
 
