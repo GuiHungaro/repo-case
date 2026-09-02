@@ -17,7 +17,7 @@ Solução do case técnico da Cômodo. O projeto tem três partes, cada uma em s
 copy .env.example .env
 ```
 
-Preencha o `GITHUB_TOKEN` no arquivo `.env` com um token pessoal do GitHub, gerado sem nenhum escopo, pois os dados consumidos são públicos. O token é injetado em tempo de execução e não fica gravado na imagem.
+Preencha o `GITHUB_TOKEN` no arquivo `.env` com um token pessoal do GitHub, gerado sem nenhum escopo, pois os dados consumidos são públicos. O token é injetado em tempo de execução e não fica gravado na imagem. A parte 3 também lê o `.env`: preencha `LLM_API_KEY`, `LLM_BASE_URL` e `LLM_MODEL` com a chave, o endereço e o modelo do provedor de LLM escolhido.
 
 ## Executando
 
@@ -120,3 +120,81 @@ A campanha que traz o cliente de maior valor é a cmp_004, com ticket médio de 
 - A receita total é a soma da receita por campanha mais o contrato do lead sem campanha, e qualquer pessoa reproduz todos os números com um único comando.
 
 Para a realocação de verba, a cmp_004 é a candidata a receber mais: tem o melhor custo por venda, o maior ticket médio e converte 13 dos 40 leads em venda, mais que o dobro de qualquer outra campanha. A verba pode vir da cmp_002 e da cmp_005, os dois maiores orçamentos de mídia do período, que juntas gastam R$ 22.856,44 dos R$ 51.645,91 e entregam 12 das 48 vendas atribuídas a campanhas. A cmp_001 tem o pior custo por venda, mas cortar a mídia dela não resolve o problema: o lead custa o preço mediano das campanhas, e a perda de 64,7% entre qualificado e briefing acontece depois da mídia. O caso dela pede investigação de funil antes de decisão de verba.
+
+## Parte 3 | Classificação com LLM
+
+O script lê as 15 conversas de pré-vendas em `data/conversas_prevendas.json`, envia cada uma ao LLM e grava um JSON por conversa em `part3_classification/output/`. Cada arquivo traz `conversa_id`, `classificacao` (quente, morno, frio ou fora_do_perfil), `prioridade` de contato de 1 a 3, o `score` da pontuação, os `sinais` que sustentam a leitura, a `proxima_acao` sugerida e um `resumo_para_o_vendedor`. No fim, o terminal mostra o resultado de cada conversa, a contagem por classificação, a duração e o status, e o script encerra com código diferente de zero quando alguma conversa fica sem classificação.
+
+```
+docker compose run --build --rm part3
+```
+
+O modelo é o `glm-5.3-flash`, no Ollama Cloud. Na comparação que fiz antes de escolher, o custo por tarefa fica em torno de US$ 0,09, contra US$ 1,80 num modelo frontier (Opus 5 com esforço máximo), com pontuação de 57 contra 63 nos benchmarks que comparei. Seis pontos a mais custam vinte vezes mais, e a escala deixa isso explícito: 4.000 conversas em três meses saem por cerca de US$ 360 no `glm-5.3-flash`, contra US$ 7.200 no Opus. Escolher o modelo que entrega o que o caso pede pelo preço que a escala tolera é engenharia de IA tanto quanto o motor de pontuação. O provedor expõe API compatível com OpenAI e mantém outros modelos no mesmo contrato (`deepseek-v4-pro`, `deepseek-v4-flash`, `kimi-k3`), então trocar de modelo é trocar o valor de `LLM_MODEL` no `.env`, sem tocar no código.
+
+### Critérios de classificação
+
+Pedir "classifique esse lead" ao modelo devolve uma opinião que ninguém consegue auditar. Aqui o trabalho é dividido em duas partes: o prompt pede evidências, e o código transforma evidência em classificação. O vocabulário de sinais é fechado, com regra de disparo para cada tag, o modelo marca apenas o que está explícito no texto da conversa, e o script aplica pesos e limiares. A estrutura segue a qualificação clássica de vendas (BANT): verba, necessidade e prazo.
+
+| Sinal | Pontos | Dispara quando |
+|---|---|---|
+| projeto_real | +3 | imóvel ou ambientes definidos com detalhe (metragem, planta, quantidade de ambientes) |
+| verba_definida | +3 | valor explícito declarado para o projeto |
+| verba_proxy | +1 | estimativa indireta: valor do imóvel comprado ou orçamento de concorrente em mãos |
+| prazo_curto | +3 | projeto em até uns 60 dias: prazo declarado, obra ou mudança liberada agora, data limite para decidir |
+| prazo_medio | +2 | projeto entre 2 e 4 meses |
+| prazo_longo | -2 | horizonte de anos |
+| passo_agendado | +2 | visita, medição, reunião ou chamada marcada com o lead |
+| intencao_fechamento | +2 | declara intenção de fechar |
+| lead_retorno | +1 | já teve contato com a empresa e voltou |
+| interesse_declarado | +1 | pediu orçamento ou preço sem dar nenhum detalhe |
+| objecao_preco | -1 | reclama de preço sem cotação nossa e sem engajar com a alternativa |
+| fora_do_servico | - | pede o que a empresa não oferece (manutenção, conserto) |
+
+O score define a temperatura: quente com 7 pontos ou mais, morno entre 1 e 6, frio com zero ou menos. A prioridade é mecânica: 1 para quente com passo agendado ou intenção de fechar, 2 para quente sem agendamento ou morno com verba, 3 nos demais casos. O pedido de serviço que a empresa não oferece não pontua: desqualifica a conversa para fora_do_perfil antes da pontuação. A chamada usa temperatura 0, e quatro execuções seguidas, uma delas dentro do container, produziram os mesmos sinais, scores e classificações; só a redação dos campos de texto livre varia entre execuções.
+
+### Extração e validação da resposta
+
+O modelo responde com o JSON dentro de um bloco de código, mesmo quando a chamada pede JSON puro. A extração passa por camadas: lê o texto inteiro, remove o bloco de código, recorta do primeiro `{` ao último `}` e valida o resultado, que precisa ter exatamente os três campos esperados, apenas tags do vocabulário, sem repetição e no máximo uma tag de prazo e uma de verba. Resposta inválida vira nova chamada, com três tentativas e espera crescente de 2s e 4s. Falha de rede ou 5xx segue o mesmo caminho; erro 4xx é configuração errada e falha sem novas tentativas. Esgotadas as tentativas, a conversa recebe um JSON válido com `classificacao: "nao_classificado"` e o campo `erro` descrevendo o motivo; o lote segue até o fim e o script encerra com código diferente de zero.
+
+### Calibração contra as conversas reais
+
+Antes da primeira execução, apliquei à mão os mesmos critérios às 15 conversas. O motor convergiu com essa leitura em 12; as divergências apontaram duas regras ambíguas do vocabulário, corrigidas no prompt e não no código: "data limite para decidir" não contava como prazo curto, e a CV008, que decide "até o fim do mês", estava saindo morno; e a CV013 entrava com passo agendado por causa de um "te confirmo hoje" do atendente, que não é passo com o lead. Com as regras corrigidas, classificação e prioridade fecham com a leitura manual nas 15 conversas:
+
+| Conversa | Score | Classificação | Prioridade |
+|---|---|---|---|
+| CV001 | 11 | quente | 1 |
+| CV006 | 9 | quente | 1 |
+| CV008 | 9 | quente | 1 |
+| CV011 | 8 | quente | 1 |
+| CV013 | 11 | quente | 1 |
+| CV015 | 13 | quente | 1 |
+| CV003 | 6 | morno | 2 |
+| CV005 | 6 | morno | 2 |
+| CV009 | 6 | morno | 2 |
+| CV007 | 1 | morno | 3 |
+| CV002 | -1 | frio | 3 |
+| CV010 | 0 | frio | 3 |
+| CV012 | -1 | frio | 3 |
+| CV014 | 0 | frio | 3 |
+| CV004 | - | fora_do_perfil | 3 |
+
+A única conversa onde o motor difere da régua manual no rótulo é a CV009, a arquiteta com verba definida: a régua dizia quente e o motor diz morno, porque "os móveis entram depois" de novembro não é data. A prioridade é a mesma nos dois casos.
+
+### Como saber, daqui a três meses, se a classificação está boa
+
+| Medida | Contra o quê | Frequência | Alerta |
+|---|---|---|---|
+| Conversas com classificação real, sem `nao_classificado` | 100% das conversas | a cada execução, acumulado por dia | qualquer `nao_classificado` no dia |
+| Concordância entre humano e IA numa amostra | as classificações da amostra | semanal, 10% das conversas da semana (cerca de 30 no ritmo de 4.000 em três meses) | concordância abaixo de 80% |
+| Proporção de cada classificação | o baseline das primeiras quatro semanas de produção | semanal, janela de duas semanas | uma classificação se desloca mais de 10 pontos percentuais |
+| Quentes que chegaram a proposta ou venda | o mesmo número no histórico anterior à IA | mensal | queda acima de 10 pontos percentuais |
+
+As duas primeiras medidas vigiam a máquina; as duas últimas medem o acerto contra o mundo real. O gatilho de desfecho é o que manda: se os quentes passarem a converter menos que no histórico, o motor está otimista, e a resposta é revisar limiares e pesos contra os desfechos reais. Essa revisão vale a cada trimestre mesmo sem alerta, porque os pesos são parâmetros do código e o custo de recalibrar é uma rodada de calibração como a da seção anterior.
+
+## Sobre o uso de IA
+
+Acredito que a IA está repetindo com o software o que a eletricidade fez com a indústria. As fábricas movidas a vapor que apenas enxertaram a energia elétrica no mesmo processo deixaram de existir; as que redesenharam os processos a partir da energia cresceram e escalaram muito mais. Vejo a mesma divisão acontecendo agora, em escala muito maior.
+
+Usei IA em todo o processo porque redesenhei meu processo de desenvolvimento em cima dela. Isso não me faz entregar código com menos qualidade nem revisar menos. O que eu terceirizo para a IA é o que antes me levava muito tempo: pesquisa, debug, construção de código essencial. O raciocínio, o pensamento crítico, o entendimento do negócio e o follow-up do workflow de estudo, discovery, planejamento e execução seguem desenhados e conduzidos por uma cabeça humana. Neste repositório isso aparece na prática: cada linha foi lida e discutida antes de entrar, e a parte 3 só fechou depois de uma calibração à mão, com os mesmos critérios aplicados às 15 conversas e comparados com a saída do motor, o que corrigiu duas regras do vocabulário de sinais. Os números deste README saíram de execuções dos scripts, não de respostas de modelo.
+
+Usada assim, para empoderar o humano por trás da tecnologia, a IA entrega um desenvolvimento muito mais acelerado, com o raciocínio continuando humano.
