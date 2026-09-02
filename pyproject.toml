@@ -1,0 +1,14 @@
+[project]
+name = "case-comodo"
+version = "0.1.0"
+description = "Case tecnico de automacao, dados e IA: ingestao via API do GitHub, SQL do funil e classificacao de leads com LLM"
+requires-python = ">=3.14"
+dependencies = [
+    "requests>=2.32.3,<3",
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.group.dev.dependencies]
+flake8 = "^7.3.0"

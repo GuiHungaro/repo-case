@@ -1,0 +1,23 @@
+services:
+  part1:
+    build: .
+    image: comodo-case
+    env_file: .env
+    volumes:
+      - ./part1_ingestion/output:/app/part1_ingestion/output
+    command: python part1_ingestion/ingest_github.py
+
+  part2:
+    build: .
+    image: comodo-case
+    volumes:
+      - ./part2_sql/output:/app/part2_sql/output
+    command: python part2_sql/load_sql.py
+
+  part3:
+    build: .
+    image: comodo-case
+    env_file: .env
+    volumes:
+      - ./part3_classification/output:/app/part3_classification/output
+    command: python part3_classification/classify_leads.py
